@@ -1,0 +1,150 @@
+import jax
+from .config import TrainingConfig, DatasetConfig
+
+class Trainer:
+    def __init__(self, model, loss_fn, training_config: TrainingConfig, dataset_config: DatasetConfig):
+        self.model = model
+        self.loss_fn = loss_fn
+        self.training_config = training_config
+        self.dataset_config = dataset_config
+        self.model_type = self._diagnose_model_type(model)
+        
+    def _diagnose_model_type(self, model) -> str:
+        # Detect Ureinuz models
+        if hasattr(model, "__module__") and "ureinuz" in model.__module__:
+            return "ureinuz"
+            
+        # Detect Flax NNX models
+        if hasattr(model, "__module__") and "flax.nnx" in model.__module__:
+            return "nnx"
+            
+        # Detect classic Flax Linen models
+        if hasattr(model, "__module__") and "flax.linen" in model.__module__:
+            return "flax_linen"
+            
+        # Detect Equinox models
+        if hasattr(model, "__module__") and "equinox" in model.__module__:
+            return "equinox"
+            
+        return "unknown"
+        
+    def extract_params(self):
+        """Extract params based on the diagnosed model type."""
+        if self.model_type == "ureinuz":
+            # Ureinuz models are fully registered PyTrees
+            return self.model
+        elif self.model_type == "nnx":
+            from flax import nnx
+            _, params = nnx.split(self.model)
+            return params
+        elif self.model_type == "flax_linen":
+            # Assume self.model is a dict of params for Flax Linen in this simplified design
+            # (In reality, Flax Trainer would need model.init or params passed in)
+            return self.model
+        elif self.model_type == "equinox":
+            import equinox as eqx
+            return eqx.filter(self.model, eqx.is_array)
+        else:
+            raise ValueError("Unsupported model type")
+            
+    def train(self):
+        from rich.console import Console
+        from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
+        
+        console = Console()
+        console.print(f"[bold green]Starting training for a [cyan]{self.model_type.upper()}[/cyan] model[/bold green]")
+        console.print(f"Epochs: [bold]{self.training_config.epochs}[/bold] | Max Steps: [bold]{self.training_config.max_steps}[/bold]")
+        
+        # 1. Initialize Optimizer
+        optimizer = self.training_config.optimizer
+        if optimizer is None:
+            import optax
+            optimizer = optax.adamw(self.training_config.learning_rate, weight_decay=self.training_config.weight_decay)
+            
+        params = self.extract_params()
+        opt_state = optimizer.init(params)
+        
+        # 2. Define train_step
+        import jax
+        import optax
+        
+        @jax.jit
+        def train_step(params, opt_state, batch):
+            loss, grads = jax.value_and_grad(self.loss_fn)(params, batch)
+            updates, new_opt_state = optimizer.update(grads, opt_state, params)
+            new_params = optax.apply_updates(params, updates)
+            return new_params, new_opt_state, loss
+
+        # 3. Training Loop
+        import time
+        step = 0
+        should_stop = False
+        start_time = time.time()
+        
+        # Try to guess total steps if dataloader has __len__
+        total_steps = None
+        if hasattr(self.dataset_config.dataloader, "__len__"):
+            total_steps = len(self.dataset_config.dataloader) * self.training_config.epochs
+        if self.training_config.max_steps is not None:
+            total_steps = self.training_config.max_steps
+            
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            TextColumn("• [bold magenta]Loss: {task.fields[loss]:.4f}[/bold magenta]"),
+            console=console
+        ) as progress:
+            
+            task_id = progress.add_task("[cyan]Training...", total=total_steps, loss=0.0)
+            
+            for epoch in range(self.training_config.epochs):
+                if should_stop:
+                    break
+                    
+                for batch in self.dataset_config.dataloader:
+                    params, opt_state, loss = train_step(params, opt_state, batch)
+                    step += 1
+                    
+                    if step % self.training_config.log_interval == 0:
+                        progress.update(task_id, advance=self.training_config.log_interval, loss=float(loss))
+                        
+                        # Calculate timing
+                        elapsed = time.time() - start_time
+                        ms_per_step = (elapsed / max(1, self.training_config.log_interval)) * 1000
+                        
+                        # Persistent log above the progress bar
+                        log_msg = (
+                            f"[bold cyan]Epoch {epoch:<3}[/bold cyan] ┃ "
+                            f"[bold yellow]Step {step:<6}[/bold yellow] ┃ "
+                            f"Loss: [bold magenta]{loss:<7.4f}[/bold magenta] ┃ "
+                            f"[dim]{ms_per_step:>6.1f} ms/it[/dim]"
+                        )
+                        progress.console.print(log_msg)
+                        start_time = time.time()
+                        
+                    if self.training_config.max_steps is not None and step >= self.training_config.max_steps:
+                        should_stop = True
+                        break
+                        
+            # Force finish the progress bar
+            progress.update(task_id, completed=total_steps if total_steps else step, loss=float(loss))
+                
+        # 4. Inject back into the object if needed
+        self._inject_params(params)
+        console.print("[bold green]✨ Training complete![/bold green]")
+        
+    def _inject_params(self, params):
+        if self.model_type == "ureinuz":
+            # The returned PyTree is a new ureinuz Module. We can update self.model in-place.
+            self.model.load_state_dict(params.state_dict())
+        elif self.model_type == "nnx":
+            from flax import nnx
+            # params is the state dict, we merge it back into the graph
+            nnx.update(self.model, params)
+        elif self.model_type == "flax_linen":
+            self.params = params
+        elif self.model_type == "equinox":
+            self.model = params
