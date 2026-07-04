@@ -64,7 +64,11 @@ class Conv2d(Module):
             self.bias = None
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        # x shape: (N, H, W, C)
+        # x shape can be (N, H, W, C) or unbatched (H, W, C)
+        is_unbatched = x.ndim == 3
+        if is_unbatched:
+            x = jnp.expand_dims(x, 0)
+            
         out = jax.lax.conv_general_dilated(
             lhs=x, 
             rhs=self.weight.value,
@@ -74,8 +78,26 @@ class Conv2d(Module):
             feature_group_count=self.groups
         )
         
+        if is_unbatched:
+            out = jnp.squeeze(out, 0)
+            
         if self.use_bias:
-            # Bias is (C,), broadcasting automatically handles NHWC
             out = out + self.bias.value
             
         return out
+
+class Upsample2d(Module):
+    def __init__(self, scale_factor: int = 2, method: str = "nearest"):
+        self.scale_factor = scale_factor
+        self.method = method
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        is_unbatched = x.ndim == 3
+        if is_unbatched:
+            H, W, C = x.shape
+            new_shape = (H * self.scale_factor, W * self.scale_factor, C)
+        else:
+            B, H, W, C = x.shape
+            new_shape = (B, H * self.scale_factor, W * self.scale_factor, C)
+        
+        return jax.image.resize(x, shape=new_shape, method=self.method)
