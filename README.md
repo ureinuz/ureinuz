@@ -6,6 +6,7 @@ It provides an intuitive, stateful design where models encapsulate their own wei
 
 ## ✨ Features
 - **Object-Oriented JAX**: Build models using stateful `nn.Module` and `Parameter` classes without manually separating parameters from architecture.
+- **🎼 Maestro**: A powerful HuggingFace auto-model loader. Seamlessly load, quantize (int4/int8/fp8), and automatically shard models like LLaMA and Qwen over any JAX Mesh configuration.
 - **Universal Trainer**: A polished, generic `Trainer` engine that can train models natively across multiple JAX-based frameworks.
 - **Unified Vision & Language Zoo**: Built-in reference implementations of ConvNeXt, UNet, Autoencoder, and LLaMA, sharing unified configuration structs.
 
@@ -20,9 +21,9 @@ from ureinuz.nn import Module, Linear
 from ureinuz import Rngs
 
 class SimpleMLP(Module):
-    def __init__(self, in_features, hidden_features, out_features, seed: Rngs):
-        self.fc1 = Linear(in_features, hidden_features, seed=seed)
-        self.fc2 = Linear(hidden_features, out_features, seed=seed)
+    def __init__(self, in_features, hidden_features, out_features, rngs: Rngs):
+        self.fc1 = Linear(in_features, hidden_features, rngs=rngs)
+        self.fc2 = Linear(hidden_features, out_features, rngs=rngs)
 
     def __call__(self, x):
         x = self.fc1(x)
@@ -32,11 +33,34 @@ class SimpleMLP(Module):
 
 # Initialize with a random seed generator
 seed_generator = Rngs(42)
-model = SimpleMLP(in_features=64, hidden_features=128, out_features=10, seed=seed_generator)
+model = SimpleMLP(in_features=64, hidden_features=128, out_features=10, rngs=seed_generator)
 
 # State management for saving and checkpointing
 state_dict = model.state_dict() # or model.flat_state_dict()
 model.load_state_dict(state_dict)
+```
+
+## 🎼 Maestro: HuggingFace & Quantization
+
+Ureinuz includes **Maestro**, an intelligent model loader that can pull HuggingFace repositories, instantiate the equivalent Ureinuz native architectures (such as LLaMA), and shard them dynamically. Maestro also supports native dynamic quantization (INT4, INT8, FP8) on-the-fly during load time.
+
+```python
+import jax
+from jax.sharding import Mesh
+from ureinuz._composer.maestro import Maestro
+
+# 1. Define your hardware mesh (e.g., for Tensor Parallelism)
+mesh = Mesh(jax.devices(), ('dp', 'tp'))
+
+# 2. Let Maestro download, quantize, and shard the weights dynamically
+with jax.set_mesh(mesh):
+    model = Maestro.from_pretrained(
+        "HuggingFaceTB/SmolLM2-135M-Instruct", 
+        dtype="int4", # Dynamically quantize weights to INT4 
+        mesh=mesh     # Distribute weights according to the mesh
+    )
+
+print("Model successfully loaded and sharded!")
 ```
 
 ## 🧠 The Universal Trainer
@@ -66,7 +90,7 @@ trainer.train()
 ```
 The trainer provides a gorgeous `rich` progress bar in the terminal, complete with time-per-step tracking!
 
-## 🚀 Quick Start (Using the existed model)
+## 🚀 Quick Start (Using an existing model)
 
 ```python
 import jax.numpy as jnp
@@ -76,7 +100,7 @@ from ureinuz.trainer import Trainer, TrainingConfig, DatasetConfig
 
 # 1. Initialize a Stateful Model from the Zoo
 config = CNNModelConfig(in_channels=3, dims=[64, 128], latent_dim=32)
-model = Autoencoder(config, seed=Rngs(42))
+model = Autoencoder(config, rngs=Rngs(42))
 
 # 2. Define a standard Loss Function
 def mse_loss(params, batch):

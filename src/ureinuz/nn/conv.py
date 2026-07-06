@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from .module import Module, Parameter
-from .. import Rngs
+from .rng import Rngs
 import math
 
 class Conv2d(Module):

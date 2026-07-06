@@ -2,8 +2,7 @@ import jax
 import jax.numpy as jnp
 import re
 from .module import Module, Parameter, iter_children
-from .linear import Linear
-from ..rng import Rngs
+from .rng import Rngs
 
 class LoRALinear(Module):
     def __init__(self, base_layer: Module, rank: int, alpha: float, seed: Rngs):
@@ -18,22 +17,40 @@ class LoRALinear(Module):
             
         # Detect if base_layer is stacked (used inside SequentialStack)
         sample_param = getattr(base_layer, 'weight', getattr(base_layer, 'weights_q', None))
-        is_stacked = sample_param is not None and len(sample_param.shape) == 3
+        if sample_param is not None:
+            expected_dims = len(self.in_features) + len(self.out_features)
+            # If it's dynamically quantized, weights_q might have fewer dims due to packing, but it still has an extra leading dim if stacked.
+            # A safer check is if it has more dims than expected, or we can just check if it's 1 dim longer than expected.
+            is_stacked = len(sample_param.shape) > expected_dims or (len(sample_param.shape) > 2 and 'weights_q' in vars(base_layer))
+        else:
+            is_stacked = False
+            
         num_layers = sample_param.shape[0] if is_stacked else None
+            
+        import math
+        self.in_features_flat = math.prod(self.in_features)
+        self.out_features_flat = math.prod(self.out_features)
             
         w_key = seed()
         if is_stacked:
-            self.lora_A = Parameter(jax.random.normal(w_key, (num_layers, self.in_features, self.rank), dtype=jnp.float32) * (1 / self.in_features))
-            self.lora_B = Parameter(jnp.zeros((num_layers, self.rank, self.out_features), dtype=jnp.float32))
+            self.lora_A = Parameter(jax.random.normal(w_key, (num_layers, self.in_features_flat, self.rank), dtype=jnp.float32) * (1 / self.in_features_flat))
+            self.lora_B = Parameter(jnp.zeros((num_layers, self.rank, self.out_features_flat), dtype=jnp.float32))
         else:
-            self.lora_A = Parameter(jax.random.normal(w_key, (self.in_features, self.rank), dtype=jnp.float32) * (1 / self.in_features))
-            self.lora_B = Parameter(jnp.zeros((self.rank, self.out_features), dtype=jnp.float32))
+            self.lora_A = Parameter(jax.random.normal(w_key, (self.in_features_flat, self.rank), dtype=jnp.float32) * (1 / self.in_features_flat))
+            self.lora_B = Parameter(jnp.zeros((self.rank, self.out_features_flat), dtype=jnp.float32))
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        # Stop gradient on the base layer so JAX doesn't try to compute gradients for the frozen quantized weights
-        # Actually JAX will only compute gradients for what we ask, but stop_gradient is safer memory-wise
         base_out = jax.lax.stop_gradient(self.base_layer(x))
-        lora_out = jnp.dot(jnp.dot(x, self.lora_A.value.astype(x.dtype)), self.lora_B.value.astype(x.dtype)) * self.scaling
+        # Flatten the input's feature dimensions to match in_features_flat
+        in_dims = len(self.in_features)
+        x_flat = x.reshape(x.shape[:-in_dims] + (self.in_features_flat,))
+        
+        lora_out = jnp.dot(jnp.dot(x_flat, self.lora_A.value.astype(x.dtype)), self.lora_B.value.astype(x.dtype)) * self.scaling
+        
+        # Reshape the output to match base_out shape
+        out_dims = self.out_features
+        lora_out = lora_out.reshape(lora_out.shape[:-1] + out_dims)
+        
         return base_out + lora_out.astype(x.dtype)
 
     def extra_repr(self):
@@ -60,3 +77,5 @@ def inject_lora(model: Module, target_modules: list[str], rank: int, alpha: floa
             inject_lora(child, target_modules, rank, alpha, seed, full_name)
             
     return model
+
+apply_lora = inject_lora

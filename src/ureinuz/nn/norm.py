@@ -2,12 +2,18 @@ import jax
 import jax.numpy as jnp
 from .module import Module, Parameter
 
+from ureinuz.utils.typing import DType, ShardMode
+
 class LayerNorm(Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-5):
+    def __init__(self, hidden_size: int, eps: float = 1e-5, axis_names: tuple[str | None, ...] | None = None):
         self.hidden_size = hidden_size
         self.eps = eps
         self.weight = Parameter(jnp.ones((hidden_size,), dtype=jnp.float32))
         self.bias = Parameter(jnp.zeros((hidden_size,), dtype=jnp.float32))
+        
+        if axis_names is not None:
+            self.weight.axis_names = axis_names
+            self.bias.axis_names = axis_names
 
     def __call__(self, x: jax.Array) -> jax.Array:
         mean = jnp.mean(x, axis=-1, keepdims=True)
@@ -19,15 +25,36 @@ class LayerNorm(Module):
         return f"{self.hidden_size}, eps={self.eps}"
 
 class RMSNorm(Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-5):
+    def __init__(
+        self, 
+        hidden_size: int, 
+        eps: float = 1e-5, 
+        dtype: DType | str = jnp.float32, 
+        with_scale: bool = True, 
+        axis_names: tuple[str | None, ...] | None = None,
+        shard_mode: ShardMode = ShardMode.AUTO
+    ):
         self.hidden_size = hidden_size
         self.eps = eps
-        self.weight = Parameter(jnp.ones((hidden_size,), dtype=jnp.float32))
+        self.with_scale = with_scale
+        self.shard_mode = shard_mode
+        
+        if with_scale:
+            self.weight = Parameter(jnp.ones((hidden_size,), dtype=dtype))
+            if axis_names is not None:
+                self.weight.axis_names = axis_names
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, out_sharding=None) -> jax.Array:
         var = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
         x_norm = x * jax.lax.rsqrt(var + self.eps)
-        return x_norm * self.weight.value
+        
+        if self.with_scale:
+            x_norm = x_norm * self.weight.value
+            
+        if self.shard_mode == ShardMode.EXPLICIT and out_sharding is not None:
+            x_norm = jax.lax.with_sharding_constraint(x_norm, out_sharding)
+            
+        return x_norm
 
     def extra_repr(self):
         return f"{self.hidden_size}, eps={self.eps}"

@@ -11,13 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""A high-performance Deep Learning framework built on JAX"""
+"""common types use across modules"""
 
-__author__ = "Shinapri"
-__version__ = "0.0.1"
-__description__ = (
-    "A high-performance Deep Learning framework built on JAX, featuring OOP-style modeling, "
-    "full-lifecycle trainers, and native architectures spanning Transformers, Diffusion, and SSMs."
-)
+import enum
+import jax.numpy as jnp
+from jax.typing import DTypeLike, ArrayLike
+from typing import Sequence
 
-from ._composer import Maestro
+
+AxisName = str | tuple[str, ...] | None
+LogicalRules = Sequence[tuple[str, AxisName]]
+
+Array = ArrayLike
+DType = DTypeLike
+Shape = Sequence[int]
+
+
+class ShardMode(enum.Enum):
+    AUTO = 'auto'
+    EXPLICIT = 'explicit'

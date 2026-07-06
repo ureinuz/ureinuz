@@ -127,6 +127,15 @@ class Module:
             elif isinstance(child, Module):
                 state.update(child.flat_state_dict(prefix + name + '.'))
         return state
+        
+    def flat_parameter_dict(self, prefix=''):
+        state = {}
+        for name, child in iter_children(self):
+            if isinstance(child, Parameter):
+                state[prefix + name] = child
+            elif isinstance(child, Module):
+                state.update(child.flat_parameter_dict(prefix + name + '.'))
+        return state
 
     def state_dict(self):
         state = {}
@@ -169,12 +178,16 @@ class Parameter(Module):
         return getattr(self.value, name)
         
     def tree_flatten(self):
-        return (self.value,), None
+        aux = {k: v for k, v in self.__dict__.items() if k != 'value'}
+        return (self.value,), aux
         
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         obj = object.__new__(cls)
         obj.value = children[0]
+        if aux_data:
+            for k, v in aux_data.items():
+                setattr(obj, k, v)
         return obj
 
 def _make_magic_methods():

@@ -3,17 +3,22 @@ import math
 import jax.numpy as jnp
 from jax.nn.initializers import normal
 from .module import Module, Parameter
-from ..rng import Rngs
+from .rng import Rngs
 
 class Embedding(Module):
-    def __init__(self, num_embeddings: int, embedding_dim: int, *, seed: Rngs = None, initializer = normal(0.02)):
+    def __init__(self, num_embeddings: int, embedding_dim: int, *, rngs: Rngs = None, seed: Rngs = None, initializer = normal(0.02)):
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         
-        if seed is None:
-            raise ValueError("A seed must be provided to initialize Embedding layer")
+        if rngs is None and seed is None:
+            raise ValueError("A rngs must be provided to initialize Embedding layer")
             
-        key = seed()
+        if rngs is None and seed is not None:
+            import warnings
+            warnings.warn('seed is deprecated. use `rngs` instead')
+            rngs = seed
+            
+        key = rngs()
         self.embedding = Parameter(initializer(key, (num_embeddings, embedding_dim), jnp.float32))
         
     def __call__(self, indices: jax.Array) -> jax.Array:
